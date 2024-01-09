@@ -2,9 +2,9 @@ package twitter
 
 import "encoding/json"
 
-// UserTweetsResponse represents the data from user tweets endpoint. It will include
-// the tweets data as well as meta data, pagination, etc.
-type UserTweetsResponse struct {
+// TweetsResponse represents the data from tweets endpoints. It will include the
+// tweets data as well as meta data, pagination (next_token), etc.
+type TweetsResponse struct {
 	Data []Tweet `json:"data"`
 	Meta Meta    `json:"meta"`
 
@@ -18,7 +18,7 @@ type UserTweetsResponse struct {
 
 // FindReferencedTweet finds the referenced tweet by id. Returns nil if not
 // found.
-func (u *UserTweetsResponse) FindReferencedTweet(referencedTweetId string) *Tweet {
+func (u *TweetsResponse) FindReferencedTweet(referencedTweetId string) *Tweet {
 	for _, tweet := range u.Includes.Tweets {
 		tweet := tweet
 		if tweet.TweetId == referencedTweetId {
@@ -81,7 +81,19 @@ func (t Tweet) IsReply() bool {
 	return t.ConversationTweetId != ""
 }
 
-type TweetDetailsResponse struct {
+// UserInteractorsResponse is a response from endpoints which return a list of
+// users who interacted with something. For example likers or retweeters of a
+// tweet.
+//
+// See
+// https://developer.twitter.com/en/docs/twitter-api/tweets/likes/api-reference/get-tweets-id-liking_users
+type UserInteractorsResponse struct {
+	Data []UserDetail `json:"data"`
+	// Only for next_token
+	Meta Meta `json:"meta"`
+
+	// Raw is the raw json response from the API
+	Raw json.RawMessage `json:"-"`
 }
 
 // See

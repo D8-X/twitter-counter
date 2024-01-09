@@ -2,6 +2,7 @@ package twitter
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"strings"
@@ -12,23 +13,47 @@ import (
 // Twitter V2 API endpoint with trailing slash
 const TwitterV2API = "https://api.twitter.com/2/"
 
-// Client queries twitter API endpoints and fetches API data.
+var (
+	// Whenever HTTP 429 is returned from API, this error will be returned from
+	// Client func calls.
+	ErrRateLimited = errors.New("rate limited")
+)
+
+// Client queries twitter API endpoints and fetches API data. Client is not
+// responsible for any rate limiting or throttling. It only issues requests and
+// parses the responses. User is responsible for any error handling. Twitter API
+// is inherently quite restrictive and even processing something like 1000
+// tweets will get rate limited pretty fast.
 type Client interface {
 	// FetchUserTweets fetches timeline tweets which include tweets, retweets,
-	// replies, quote tweets of given userId
+	// replies, quote tweets for given userId
 	//
 	// Limitations are: maximum 3200 in the past. Up to 100 tweets per single
-	// request.
+	// request. Rate limits based on the subscription plan.
 	//
-	// See
+	// For more, see
 	// https://developer.twitter.com/en/docs/twitter-api/tweets/timelines/introduction
-	FetchUserTweets(userId string, options ...ApiRequestOption) (*UserTweetsResponse, error)
+	FetchUserTweets(userId string, options ...ApiRequestOption) (*TweetsResponse, error)
 
-	FetchUserLikedTweets(userId string, options ...ApiRequestOption) (*UserTweetsResponse, error)
+	// FetchUserLikedTweets fetches the tweets liked by the user.
+	//
+	// Rate limits based on the subscription plan. For pro plan 5/15 mins
+	//
+	FetchUserLikedTweets(userId string, options ...ApiRequestOption) (*TweetsResponse, error)
 
-	FetchTweetDetails(tweetId string, options ...ApiRequestOption) (*TweetDetailsResponse, error)
+	// FetchTweetLikers fetches users who liked the given tweetId.
+	//
+	// Limitations: 100 items per request. Rate limits based on the
+	// subscription. For pro plan: 25/15min
+	FetchTweetLikers(tweetId string, options ...ApiRequestOption) (*UserInteractorsResponse, error)
 
-	// FindUserDetails is a helper method to find user ids
+	// FetchTweetRetweeters fetches users who retweeted the given tweetId tweet.
+	//
+	// Limitations: 100 items per request. Rate limits based on the
+	// subscription. Pro plan: 5/15min
+	FetchTweetRetweeters(tweetId string, options ...ApiRequestOption) (*UserInteractorsResponse, error)
+
+	// FindUserDetails is a helper method to find user ids by names.
 	FindUserDetails(userNames []string) (*UserLookupResponse, error)
 }
 
@@ -76,6 +101,11 @@ func (t *twitterHTTPClient) sendGet(endpoint string, options ...ApiRequestOption
 			slog.Int("status", resp.StatusCode()),
 			slog.String("repsonse", string(body)),
 		)
+
+		if resp.StatusCode() == 429 {
+			return nil, ErrRateLimited
+		}
+
 		return nil, fmt.Errorf("response failed: %d", resp.StatusCode())
 	}
 
@@ -103,9 +133,9 @@ func (t *twitterHTTPClient) FindUserDetails(userNames []string) (*UserLookupResp
 	return ret, nil
 }
 
-// FetchUserTweets send a user tweets request and parses it. Collected
+// FetchUserTweets sends a user tweets request and parses it. Collected
 // iformation includes tweet text, tweet id, conversation id,
-func (t *twitterHTTPClient) FetchUserTweets(userId string, options ...ApiRequestOption) (*UserTweetsResponse, error) {
+func (t *twitterHTTPClient) FetchUserTweets(userId string, options ...ApiRequestOption) (*TweetsResponse, error) {
 	endpoint := TwitterV2API + "users/" + userId + "/tweets"
 	body, err := t.sendGet(endpoint,
 		append(
@@ -130,7 +160,7 @@ func (t *twitterHTTPClient) FetchUserTweets(userId string, options ...ApiRequest
 		return nil, err
 	}
 
-	ret := &UserTweetsResponse{
+	ret := &TweetsResponse{
 		Raw: body,
 	}
 	if err := json.Unmarshal(body, ret); err != nil {
@@ -141,8 +171,10 @@ func (t *twitterHTTPClient) FetchUserTweets(userId string, options ...ApiRequest
 }
 
 // FetchUserTweets send a user tweets request and parses it. Collected
-// iformation includes tweet text, tweet id, conversation id,
-func (t *twitterHTTPClient) FetchUserLikedTweets(userId string, options ...ApiRequestOption) (*UserTweetsResponse, error) {
+// iformation includes tweet text, tweet id, author id, and might also
+// includes.users. Tweet author ids are the most important for data processing.
+// Up to 100 results per request.
+func (t *twitterHTTPClient) FetchUserLikedTweets(userId string, options ...ApiRequestOption) (*TweetsResponse, error) {
 	endpoint := TwitterV2API + "users/" + userId + "/liked_tweets"
 	body, err := t.sendGet(endpoint,
 		append(
@@ -158,9 +190,7 @@ func (t *twitterHTTPClient) FetchUserLikedTweets(userId string, options ...ApiRe
 		return nil, err
 	}
 
-	fmt.Printf("Response body: %s\n", body)
-
-	ret := &UserTweetsResponse{
+	ret := &TweetsResponse{
 		Raw: body,
 	}
 	if err := json.Unmarshal(body, ret); err != nil {
@@ -170,22 +200,38 @@ func (t *twitterHTTPClient) FetchUserLikedTweets(userId string, options ...ApiRe
 	return ret, nil
 }
 
-func (t twitterHTTPClient) FetchTweetDetails(tweetId string, options ...ApiRequestOption) (*TweetDetailsResponse, error) {
-
-	endpoint := TwitterV2API + "tweets/" + tweetId
-	body, err := t.sendGet(endpoint,
-		options...,
-	)
+// FetchTweetLikers finds the users who liked given tweetId tweet. Limitations
+func (t twitterHTTPClient) FetchTweetLikers(tweetId string, options ...ApiRequestOption) (*UserInteractorsResponse, error) {
+	endpoint := TwitterV2API + "tweets/" + tweetId + "/liking_users"
+	body, err := t.sendGet(endpoint, options...)
 	if err != nil {
 		return nil, err
 	}
 
-	fmt.Printf("Response body: %s\n", body)
+	ret := &UserInteractorsResponse{
+		Raw: body,
+	}
+	if err := json.Unmarshal(body, ret); err != nil {
+		return nil, fmt.Errorf("parsing user tweet likers response: %w", err)
+	}
 
-	// ret := &UserTweetsResponse{} if err := json.Unmarshal(body, ret); err !=
-	// nil {
-	//  return nil, fmt.Errorf("parsing user tweets response: %w", err)
-	// }
+	return ret, nil
+}
 
-	return nil, nil
+func (t twitterHTTPClient) FetchTweetRetweeters(tweetId string, options ...ApiRequestOption) (*UserInteractorsResponse, error) {
+	endpoint := TwitterV2API + "tweets/" + tweetId + "/retweeted_by"
+	body, err := t.sendGet(endpoint, options...)
+	if err != nil {
+		return nil, err
+	}
+
+	ret := &UserInteractorsResponse{
+		Raw: body,
+	}
+	if err := json.Unmarshal(body, ret); err != nil {
+		return nil, fmt.Errorf("parsing tweet retweets response: %w", err)
+	}
+
+	return ret, nil
+
 }

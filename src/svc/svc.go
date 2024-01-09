@@ -51,6 +51,9 @@ func RunTwitterSocialGraphService() {
 		}
 	}
 
+	a := twitter.NewDevAnalyzer(client)
+	a.CreateUserInteractionGraph("1593204306206932993")
+
 	// tweets, err := client.FetchUserTweets(userId, twitter.OptApplyMaxResults("5"))
 	// if err != nil {
 	// 	slog.Error("failed to fetch user tweets", err)
@@ -58,11 +61,34 @@ func RunTwitterSocialGraphService() {
 	// }
 	// fmt.Printf("tweets raw: %+s\n\n", tweets.Raw)
 
-	userId := "1593204306206932993"
+	// userId := "1593204306206932993"
 	// analyzer := &twitter.Analyzer{Client: client}
 	// analyzer.CreateUserInteractionGraph(userId)
 
-	client.FetchUserLikedTweets(userId)
+	// resp, err := client.FetchUserLikedTweets(userId)
+	// if err != nil {
+	// 	if errors.Is(err, twitter.ErrRateLimited) {
+	// 		fmt.Printf("we got rate limited!!!\n\n\n")
+	// 	}
+
+	// 	slog.Error("failed to fetch user liked tweets")
+	// } else {
+	// 	for _, tweet := range resp.Data {
+	// 		fmt.Printf("Liked tweet author and id: %s %s\n", tweet.AuthorUserId, tweet.TweetId)
+	// 	}
+	// }
+
+	// for {
+	// 	likers, err := client.FetchTweetLikers("1627601297083092992")
+	// 	if err != nil {
+	// 		log.Fatal(err)
+	// 	}
+
+	// 	fmt.Printf("Likes raw: %+s\n\n", likers.Raw)
+	// 	for _, u := range likers.Data {
+	// 		fmt.Printf("Liker: %s id: %s\n", u.Username, u.Id)
+	// 	}
+	// }
 
 	// client.FetchTweetDetails(tweetId) // twitter.OptApplyMaxResults("5"),
 
