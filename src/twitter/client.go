@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"strings"
 
 	"github.com/go-resty/resty/v2"
 )
@@ -11,19 +12,24 @@ import (
 // Twitter V2 API endpoint with trailing slash
 const TwitterV2API = "https://api.twitter.com/2/"
 
+// Client queries twitter API endpoints and fetches API data.
 type Client interface {
 	// FetchUserTweets fetches timeline tweets which include tweets, retweets,
 	// replies, quote tweets of given userId
 	//
-	// Limitations are: maximum 3200 in the past.
+	// Limitations are: maximum 3200 in the past. Up to 100 tweets per single
+	// request.
 	//
 	// See
 	// https://developer.twitter.com/en/docs/twitter-api/tweets/timelines/introduction
 	FetchUserTweets(userId string, options ...ApiRequestOption) (*UserTweetsResponse, error)
 
-	FetchUserLikedTweets(userId string, options ...ApiRequestOption)
+	FetchUserLikedTweets(userId string, options ...ApiRequestOption) (*UserTweetsResponse, error)
 
 	FetchTweetDetails(tweetId string, options ...ApiRequestOption) (*TweetDetailsResponse, error)
+
+	// FindUserDetails is a helper method to find user ids
+	FindUserDetails(userNames []string) (*UserLookupResponse, error)
 }
 
 func NewAuthBearerClient(authBearer string) *twitterHTTPClient {
@@ -76,6 +82,27 @@ func (t *twitterHTTPClient) sendGet(endpoint string, options ...ApiRequestOption
 	return body, nil
 }
 
+func (t *twitterHTTPClient) FindUserDetails(userNames []string) (*UserLookupResponse, error) {
+	endpoint := TwitterV2API + "users/by"
+
+	body, err := t.sendGet(endpoint, &OptApplyQueryParam{
+		Key:   "usernames",
+		Value: strings.Join(userNames, ","),
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	ret := &UserLookupResponse{
+		Raw: body,
+	}
+	if err := json.Unmarshal(body, ret); err != nil {
+		return nil, fmt.Errorf("parsing user lookup response: %w", err)
+	}
+
+	return ret, nil
+}
+
 // FetchUserTweets send a user tweets request and parses it. Collected
 // iformation includes tweet text, tweet id, conversation id,
 func (t *twitterHTTPClient) FetchUserTweets(userId string, options ...ApiRequestOption) (*UserTweetsResponse, error) {
@@ -83,7 +110,6 @@ func (t *twitterHTTPClient) FetchUserTweets(userId string, options ...ApiRequest
 	body, err := t.sendGet(endpoint,
 		append(
 			options,
-			OptApplyMaxResults("5"),
 			// Append the conversation_id expansion to get the information if
 			// tweet is a reply in conversation. For simple tweets the
 			// conversation_id should be the same tweet id
@@ -92,9 +118,39 @@ func (t *twitterHTTPClient) FetchUserTweets(userId string, options ...ApiRequest
 				Value: "conversation_id,referenced_tweets",
 			},
 			// Append information about conversation tweet author
+			// (in_reply_to_user_id) and referenced tweets and author_id (any of
+			// these might be empty too if a tweet is just a simple tweet)
 			&OptApplyQueryParam{
 				Key:   "expansions",
-				Value: "in_reply_to_user_id",
+				Value: "in_reply_to_user_id,referenced_tweets.id,referenced_tweets.id.author_id",
+			},
+		)...,
+	)
+	if err != nil {
+		return nil, err
+	}
+
+	ret := &UserTweetsResponse{
+		Raw: body,
+	}
+	if err := json.Unmarshal(body, ret); err != nil {
+		return nil, fmt.Errorf("parsing user tweets response: %w", err)
+	}
+
+	return ret, nil
+}
+
+// FetchUserTweets send a user tweets request and parses it. Collected
+// iformation includes tweet text, tweet id, conversation id,
+func (t *twitterHTTPClient) FetchUserLikedTweets(userId string, options ...ApiRequestOption) (*UserTweetsResponse, error) {
+	endpoint := TwitterV2API + "users/" + userId + "/liked_tweets"
+	body, err := t.sendGet(endpoint,
+		append(
+			options,
+			// Append information about conversation tweet author user id
+			&OptApplyQueryParam{
+				Key:   "expansions",
+				Value: "author_id",
 			},
 		)...,
 	)
@@ -104,9 +160,11 @@ func (t *twitterHTTPClient) FetchUserTweets(userId string, options ...ApiRequest
 
 	fmt.Printf("Response body: %s\n", body)
 
-	ret := &UserTweetsResponse{}
+	ret := &UserTweetsResponse{
+		Raw: body,
+	}
 	if err := json.Unmarshal(body, ret); err != nil {
-		return nil, fmt.Errorf("parsing user tweets response: %w", err)
+		return nil, fmt.Errorf("parsing user liked tweets response: %w", err)
 	}
 
 	return ret, nil
@@ -124,14 +182,10 @@ func (t twitterHTTPClient) FetchTweetDetails(tweetId string, options ...ApiReque
 
 	fmt.Printf("Response body: %s\n", body)
 
-	// ret := &UserTweetsResponse{}
-	// if err := json.Unmarshal(body, ret); err != nil {
-	// 	return nil, fmt.Errorf("parsing user tweets response: %w", err)
+	// ret := &UserTweetsResponse{} if err := json.Unmarshal(body, ret); err !=
+	// nil {
+	//  return nil, fmt.Errorf("parsing user tweets response: %w", err)
 	// }
 
 	return nil, nil
-}
-
-func (t *twitterHTTPClient) FetchUserLikedTweets(userId string, options ...ApiRequestOption) {
-
 }

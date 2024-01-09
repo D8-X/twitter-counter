@@ -37,8 +37,34 @@ func RunTwitterSocialGraphService() {
 	// Build the Twitter client
 	var client twitter.Client = twitter.NewAuthBearerClient(viper.GetString(env.TWITTER_AUTH_BEARER))
 
-	tweetId := "1742122106882552133"
-	client.FetchTweetDetails(tweetId) // twitter.OptApplyMaxResults("5"),
+	// Find user details
+	userDetails, err := client.FindUserDetails([]string{"d8x_exchange"})
+	if err != nil {
+		slog.Error("failed to find user details", err)
+	} else {
+		for _, user := range userDetails.Data {
+			slog.Info("user details",
+				slog.String("user_id", user.Id),
+				slog.String("name", user.Name),
+				slog.String("username", user.Username),
+			)
+		}
+	}
+
+	// tweets, err := client.FetchUserTweets(userId, twitter.OptApplyMaxResults("5"))
+	// if err != nil {
+	// 	slog.Error("failed to fetch user tweets", err)
+	// 	return
+	// }
+	// fmt.Printf("tweets raw: %+s\n\n", tweets.Raw)
+
+	userId := "1593204306206932993"
+	// analyzer := &twitter.Analyzer{Client: client}
+	// analyzer.CreateUserInteractionGraph(userId)
+
+	client.FetchUserLikedTweets(userId)
+
+	// client.FetchTweetDetails(tweetId) // twitter.OptApplyMaxResults("5"),
 
 	// a := &twitter.Analyzer{Client: client}
 	// a.CreateUserInteractionGraph(userId)

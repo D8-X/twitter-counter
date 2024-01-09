@@ -1,10 +1,38 @@
 package twitter
 
+import "encoding/json"
+
 // UserTweetsResponse represents the data from user tweets endpoint. It will include
 // the tweets data as well as meta data, pagination, etc.
 type UserTweetsResponse struct {
 	Data []Tweet `json:"data"`
 	Meta Meta    `json:"meta"`
+
+	// Includes will contain users,tweets and other objects that are referenced
+	// in Data tweets.
+	Includes TweetIncludes `json:"includes"`
+
+	// Raw is the raw json response from the API
+	Raw json.RawMessage `json:"-"`
+}
+
+// FindReferencedTweet finds the referenced tweet by id. Returns nil if not
+// found.
+func (u *UserTweetsResponse) FindReferencedTweet(referencedTweetId string) *Tweet {
+	for _, tweet := range u.Includes.Tweets {
+		tweet := tweet
+		if tweet.TweetId == referencedTweetId {
+			return &tweet
+		}
+	}
+
+	return nil
+}
+
+// Tweets includes object
+type TweetIncludes struct {
+	// Included referenced tweets
+	Tweets []Tweet `json:"tweets"`
 }
 
 type Meta struct {
@@ -30,6 +58,23 @@ type Tweet struct {
 	// User id of the conversation tweet (this tweet is a reply to a tweet of
 	// this InReplyToUserId user id). Will be empty when tweet is not a reply
 	InReplyToUserId string `json:"in_reply_to_user_id"`
+
+	// Referenced tweets refs. UserTweetsResponse.Includes.Tweets will include
+	// full details of referenced tweets (linked via Id)
+	ReferencedTweets []ReferencedTweetMeta `json:"referenced_tweets"`
+}
+
+type ReferencedTweetType string
+
+const (
+	Retweet ReferencedTweetType = "retweeted"
+	Quoted  ReferencedTweetType = "quoted"
+	Reply   ReferencedTweetType = "replied_to"
+)
+
+type ReferencedTweetMeta struct {
+	Type ReferencedTweetType `json:"type"`
+	Id   string              `json:"id"`
 }
 
 func (t Tweet) IsReply() bool {
@@ -37,4 +82,18 @@ func (t Tweet) IsReply() bool {
 }
 
 type TweetDetailsResponse struct {
+}
+
+// See
+// https://developer.twitter.com/en/docs/twitter-api/users/lookup/api-reference/get-users-by
+type UserLookupResponse struct {
+	Data []UserDetail `json:"data"`
+
+	Raw json.RawMessage `json:"-"`
+}
+
+type UserDetail struct {
+	Id       string `json:"id"`
+	Name     string `json:"name"`
+	Username string `json:"username"`
 }
