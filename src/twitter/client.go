@@ -2,9 +2,9 @@ package twitter
 
 import (
 	"encoding/json"
-	"errors"
 	"fmt"
 	"log/slog"
+	"strconv"
 	"strings"
 
 	"github.com/go-resty/resty/v2"
@@ -13,11 +13,15 @@ import (
 // Twitter V2 API endpoint with trailing slash
 const TwitterV2API = "https://api.twitter.com/2/"
 
-var (
-	// Whenever HTTP 429 is returned from API, this error will be returned from
-	// Client func calls.
-	ErrRateLimited = errors.New("rate limited")
-)
+// Whenever HTTP 429 is returned from API, this error will be returned from
+// Client func calls.
+type ErrRateLimited struct {
+	ResetTimestamp int64
+}
+
+func (e *ErrRateLimited) Error() string {
+	return "rate limited"
+}
 
 // Client queries twitter API endpoints and fetches API data. Client is not
 // responsible for any rate limiting or throttling. It only issues requests and
@@ -102,8 +106,16 @@ func (t *twitterHTTPClient) sendGet(endpoint string, options ...ApiRequestOption
 			slog.String("repsonse", string(body)),
 		)
 
+		// For rate limited requests -
 		if resp.StatusCode() == 429 {
-			return nil, ErrRateLimited
+			resetTimeInt := int64(0)
+			if resetTime := resp.Header().Get("x-rate-limit-reset"); resetTime != "" {
+				if ri, err := strconv.ParseInt(resetTime, 10, 64); err == nil {
+					resetTimeInt = ri
+				}
+			}
+
+			return nil, &ErrRateLimited{ResetTimestamp: resetTimeInt}
 		}
 
 		return nil, fmt.Errorf("response failed: %d", resp.StatusCode())

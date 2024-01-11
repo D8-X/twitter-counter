@@ -7,7 +7,6 @@ import (
 )
 
 func main() {
-
 	fmt.Println("This is social graph service")
 	svc.RunTwitterSocialGraphService()
 }

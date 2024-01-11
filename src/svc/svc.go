@@ -1,6 +1,7 @@
 package svc
 
 import (
+	"fmt"
 	"log/slog"
 	"os"
 
@@ -52,7 +53,8 @@ func RunTwitterSocialGraphService() {
 	}
 
 	a := twitter.NewDevAnalyzer(client)
-	a.CreateUserInteractionGraph("1593204306206932993")
+	result, err := a.CreateUserInteractionGraph("1593204306206932993")
+	fmt.Printf("the result: %+v\n", result)
 
 	// tweets, err := client.FetchUserTweets(userId, twitter.OptApplyMaxResults("5"))
 	// if err != nil {
