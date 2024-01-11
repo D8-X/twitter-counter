@@ -2,7 +2,9 @@ package twitter
 
 import (
 	"log/slog"
+	"sort"
 	"strconv"
+	"sync"
 	"time"
 )
 
@@ -24,6 +26,48 @@ type UserInteractions struct {
 	UserLikedTweets map[string]uint
 }
 
+// Ranked returns ranked list of user ids and their interaction values based on
+// given UserInteractions data. First returned slice is the user ids, second is
+// the interaction counts.
+func (u *UserInteractions) Ranked() ([]string, []uint) {
+	all := map[string]uint{}
+
+	setHelper := func(k string, v uint) {
+		if _, ok := all[k]; !ok {
+			all[k] = 0
+		}
+		all[k] += v
+	}
+
+	for k, v := range u.RepliesToOtherUsers {
+		setHelper(k, v)
+	}
+	for k, v := range u.RetweetsToOtherUsers {
+		setHelper(k, v)
+	}
+	for k, v := range u.UserLikedTweets {
+		setHelper(k, v)
+	}
+
+	userIds := make([]string, 0, len(all))
+	userValues := make([]uint, len(all))
+
+	for k := range all {
+		userIds = append(userIds, k)
+	}
+
+	// Order in descending order
+	sort.Slice(userIds, func(i, j int) bool {
+		return all[userIds[i]] > all[userIds[j]]
+	})
+
+	for i, userId := range userIds {
+		userValues[i] = all[userId]
+	}
+
+	return userIds, userValues
+}
+
 func NewUserInteractionsObject() *UserInteractions {
 	return &UserInteractions{
 		RepliesToOtherUsers:  map[string]uint{},
@@ -32,12 +76,13 @@ func NewUserInteractionsObject() *UserInteractions {
 	}
 }
 
-// NewDevAnalyzer creates a Analyzer with sensible defaults for development. For
-// production usage please create a new Analyzer manually.
+// NewDevAnalyzer creates a Analyzer with sensible defaults for development with
+// BASIC API plan. For production usage please create a new Analyzer manually or
+// use NewProductionAnalyzer.
 func NewDevAnalyzer(c Client) *Analyzer {
 	return &Analyzer{
 		Client:                 c,
-		MaxTweetsPerRequest:    5,
+		MaxTweetsPerRequest:    100,
 		UserTweetsToFetch:      200,
 		UserLikedTweetsToFetch: 200,
 		Logger:                 slog.Default(),
@@ -47,9 +92,13 @@ func NewDevAnalyzer(c Client) *Analyzer {
 	}
 }
 
+// NewProductionAnalyzer constructs a new analyzer with rate limiting for PRO
+// API plan.
 func NewProductionAnalyzer(c Client) *Analyzer {
 	return &Analyzer{
 		Client:                 c,
+		TimelineLimiter:        NewRateLimiter(75, time.Minute*15),
+		LikedTweetsLimiter:     NewRateLimiter(75, time.Minute*15),
 		MaxTweetsPerRequest:    100,
 		UserTweetsToFetch:      1000,
 		UserLikedTweetsToFetch: 1000,
@@ -68,10 +117,10 @@ type Analyzer struct {
 	MaxTweetsPerRequest uint
 
 	// Rate limiter for user's timeline endpoint
-	TimelineLimiter *TwitterRateLimiter
+	TimelineLimiter ApiRateLimiter
 
 	// Rate limiter for user's liked tweets endpoint
-	LikedTweetsLimiter *TwitterRateLimiter
+	LikedTweetsLimiter ApiRateLimiter
 
 	// How many timeline tweets to check for user. Maximum number is 3200
 	// (limitation of twitter API). This only controls how many tweets will be
@@ -124,6 +173,7 @@ func (a *Analyzer) ProcessDirectUserInteractions(r *TweetsResponse, result *User
 	}
 }
 
+// ProcessUserLikes collects author user ids of user's liked tweets
 func (a *Analyzer) ProcessUserLikes(likedTweets *TweetsResponse, result *UserInteractions) {
 	for _, tweet := range likedTweets.Data {
 		if tweet.AuthorUserId != "" {
@@ -135,104 +185,129 @@ func (a *Analyzer) ProcessUserLikes(likedTweets *TweetsResponse, result *UserInt
 	}
 }
 
+// CollectAndProcessEndpoint collects paginated data via fetchFunc and processes
+// the responses via processAndContinue. This function also handles pagination
+// and rate limiting automatically.
+func (a *Analyzer) CollectAndProcessEndpoint(endpointName string, rateLimiter ApiRateLimiter, fetchFunc func(opts []ApiRequestOption) (*TweetsResponse, error), processAndContinue func(*TweetsResponse) bool) {
+	apiRequestOpts := []ApiRequestOption{}
+	for {
+		if rateLimiter.Allow() {
+			tweets, err := fetchFunc(apiRequestOpts)
+			if err != nil {
+				// When we get limited from the API, set the limiter to limited
+				// state and set the next available run time to the reset
+				// timestamp if available.
+				if erl, ok := err.(*ErrRateLimited); ok {
+					rateLimiter.MarkLimited()
+					if erl.ResetTimestamp > 0 {
+						rateLimiter.SetAvailableTime(erl.ResetTimestamp)
+					}
+
+					a.Logger.Warn(
+						"rate limited, waiting to run next request",
+						slog.Time("next_reset_from_api", time.Unix(erl.ResetTimestamp, 0)),
+						slog.String("endpoint", endpointName),
+					)
+					continue
+				}
+
+				// Exit on other errors
+				break
+			}
+
+			// Process the result and exit when done
+			if !processAndContinue(tweets) {
+				break
+			}
+
+			// If next token is still available - set it in options
+			apiRequestOpts = []ApiRequestOption{OptApplyPaginationToken(tweets.Meta.NextToken)}
+
+		} else {
+			wt := rateLimiter.WaitTime()
+			a.Logger.Info("rate limit reached, waiting to run next request",
+				slog.Duration("wait_time", wt),
+				slog.Time("next_run", time.Now().Add(wt)),
+				slog.String("endpoint", endpointName),
+			)
+			time.Sleep(wt)
+		}
+	}
+}
+
 // CreateUserInteractionGraph runs a full interaction check for a given user id.
 // Note that due to rate limitin completing the interaction run might take a
 // long time. Make sure you use sensible values for limits.
 func (a *Analyzer) CreateUserInteractionGraph(userTwitterId string) (*UserInteractions, error) {
 	result := NewUserInteractionsObject()
 	result.UserTwitterId = userTwitterId
+	userInteractionsMu := sync.Mutex{}
 
-	timelineOpts := []ApiRequestOption{}
 	collectedTweetsNum := 0
 	collectedLikedTweetsNum := 0
 
+	wg := sync.WaitGroup{}
+
 	// Process the tweets timeline
-	for {
-		if a.TimelineLimiter.Allow() {
-			tweets, err := a.Client.FetchUserTweets(userTwitterId,
-				append(timelineOpts, OptApplyMaxResults(strconv.Itoa(int(a.MaxTweetsPerRequest))))...,
-			)
-			if err != nil {
-				// When we got limited from the API, set the limiter to limited
-				// state and set the next available run time if available.
-				if erl, ok := err.(*ErrRateLimited); ok {
-					a.TimelineLimiter.MarkLimited()
-					if erl.ResetTimestamp > 0 {
-						a.TimelineLimiter.SetAvailableTime(erl.ResetTimestamp)
-					}
+	wg.Add(1)
+	go func() {
+		a.CollectAndProcessEndpoint("user-timeline-tweets", a.TimelineLimiter,
+			func(opts []ApiRequestOption) (*TweetsResponse, error) {
+				return a.Client.FetchUserTweets(userTwitterId,
+					append(opts, OptApplyMaxResults(strconv.Itoa(int(a.MaxTweetsPerRequest))))...,
+				)
+			},
+			func(tweets *TweetsResponse) bool {
+				userInteractionsMu.Lock()
+				defer userInteractionsMu.Unlock()
 
-					a.Logger.Warn("call rate limited, waiting to run next request")
-					continue
+				// Process direct interactions
+				a.ProcessDirectUserInteractions(tweets, result)
+
+				collectedTweetsNum += len(tweets.Data)
+				a.Logger.Info("collected timeline tweets", slog.Int("count", collectedTweetsNum))
+
+				// Stop when we don't have more results or we reached our defined
+				// limit
+				if len(tweets.Data) < int(a.MaxTweetsPerRequest) || tweets.Meta.NextToken == "" || collectedTweetsNum >= int(a.UserTweetsToFetch) {
+					return false
 				}
+				return true
+			},
+		)
+		wg.Done()
+	}()
 
-				// Exit on other errors
-				break
-			}
+	// Process user liked tweets
+	wg.Add(1)
+	go func() {
+		a.CollectAndProcessEndpoint("user-liked-tweets", a.LikedTweetsLimiter,
+			func(opts []ApiRequestOption) (*TweetsResponse, error) {
+				return a.Client.FetchUserLikedTweets(userTwitterId,
+					append(opts, OptApplyMaxResults(strconv.Itoa(int(a.MaxTweetsPerRequest))))...,
+				)
+			},
+			func(tweets *TweetsResponse) bool {
+				userInteractionsMu.Lock()
+				defer userInteractionsMu.Unlock()
 
-			// Process direct interactions
-			a.ProcessDirectUserInteractions(tweets, result)
+				a.ProcessUserLikes(tweets, result)
 
-			collectedTweetsNum += len(tweets.Data)
+				collectedLikedTweetsNum += len(tweets.Data)
+				a.Logger.Info("collected liked tweets", slog.Int("count", collectedLikedTweetsNum))
 
-			// Stop when we don't have more results or we reached our defined
-			// limit
-			if len(tweets.Data) < int(a.MaxTweetsPerRequest) || tweets.Meta.NextToken == "" || collectedTweetsNum >= int(a.UserTweetsToFetch) {
-				break
-			}
-
-			// If next token is still available - set it in options
-			timelineOpts = []ApiRequestOption{OptApplyPaginationToken(tweets.Meta.NextToken)}
-
-		} else {
-			wt := a.TimelineLimiter.WaitTime()
-			a.Logger.Info("collecting user timeline tweets, rate limit reached, waiting to run next request", slog.Duration("wait_time", wt))
-			time.Sleep(wt)
-		}
-	}
-
-	likedTweetsOpts := []ApiRequestOption{}
-	// Process liked tweets
-	for {
-		if a.LikedTweetsLimiter.Allow() {
-			tweets, err := a.Client.FetchUserLikedTweets(userTwitterId,
-				append(likedTweetsOpts, OptApplyMaxResults(strconv.Itoa(int(a.MaxTweetsPerRequest))))...,
-			)
-			if err != nil {
-				// When we got limited from the API, set the limiter to limited
-				// state and set the next available run time if available.
-				if erl, ok := err.(*ErrRateLimited); ok {
-					a.LikedTweetsLimiter.MarkLimited()
-					if erl.ResetTimestamp > 0 {
-						a.LikedTweetsLimiter.SetAvailableTime(erl.ResetTimestamp)
-					}
-
-					a.Logger.Warn("call rate limited, waiting to run next request")
-					continue
+				// Stop when we don't have more results or we reached our defined
+				// limit
+				if len(tweets.Data) < int(a.MaxTweetsPerRequest) || tweets.Meta.NextToken == "" || collectedLikedTweetsNum >= int(a.UserLikedTweetsToFetch) {
+					return false
 				}
+				return true
+			},
+		)
+		wg.Done()
+	}()
 
-				// Exit on other errors
-				break
-			}
-
-			a.ProcessUserLikes(tweets, result)
-
-			collectedLikedTweetsNum += len(tweets.Data)
-
-			// Stop when we don't have more results or we reached our defined
-			// limit
-			if len(tweets.Data) < int(a.MaxTweetsPerRequest) || tweets.Meta.NextToken == "" || collectedLikedTweetsNum >= int(a.UserLikedTweetsToFetch) {
-				break
-			}
-
-			// If next token is still available - set it in options
-			likedTweetsOpts = []ApiRequestOption{OptApplyPaginationToken(tweets.Meta.NextToken)}
-
-		} else {
-			wt := a.TimelineLimiter.WaitTime()
-			a.Logger.Info("collecting user liked tweets, rate limit reached, waiting to run next request", slog.Duration("wait_time", wt))
-			time.Sleep(wt)
-		}
-	}
+	wg.Wait()
 
 	return result, nil
 }

@@ -39,22 +39,27 @@ func RunTwitterSocialGraphService() {
 	var client twitter.Client = twitter.NewAuthBearerClient(viper.GetString(env.TWITTER_AUTH_BEARER))
 
 	// Find user details
-	userDetails, err := client.FindUserDetails([]string{"d8x_exchange"})
-	if err != nil {
-		slog.Error("failed to find user details", err)
-	} else {
-		for _, user := range userDetails.Data {
-			slog.Info("user details",
-				slog.String("user_id", user.Id),
-				slog.String("name", user.Name),
-				slog.String("username", user.Username),
-			)
-		}
-	}
+	// userDetails, err := client.FindUserDetails([]string{"d8x_exchange"})
+	// if err != nil {
+	// 	slog.Error("failed to find user details", err)
+	// } else {
+	// 	for _, user := range userDetails.Data {
+	// 		slog.Info("user details",
+	// 			slog.String("user_id", user.Id),
+	// 			slog.String("name", user.Name),
+	// 			slog.String("username", user.Username),
+	// 		)
+	// 	}
+	// }
 
 	a := twitter.NewDevAnalyzer(client)
-	result, err := a.CreateUserInteractionGraph("1593204306206932993")
+	result, _ := a.CreateUserInteractionGraph("1593204306206932993")
 	fmt.Printf("the result: %+v\n", result)
+
+	rankedUserIds, rankedUserValues := result.Ranked()
+	for i, userId := range rankedUserIds {
+		fmt.Printf("ranked user: id: %s val: %d\n", userId, rankedUserValues[i])
+	}
 
 	// tweets, err := client.FetchUserTweets(userId, twitter.OptApplyMaxResults("5"))
 	// if err != nil {

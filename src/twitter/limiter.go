@@ -5,6 +5,17 @@ import (
 	"time"
 )
 
+type ApiRateLimiter interface {
+	// Allow attempts to reserve a request and returns true if request can run.
+	Allow() bool
+	// WaitTime returns duration after which a next request can run.
+	WaitTime() time.Duration
+	// MarkLimited marks limiter as fully exchausted at the call moment.
+	MarkLimited()
+	// SetAvailableTime sets the timestamp when the next request can run.
+	SetAvailableTime(timestamp int64)
+}
+
 func NewRateLimiter(requests int, timeWindow time.Duration) *TwitterRateLimiter {
 	return &TwitterRateLimiter{
 		requests:   requests,
@@ -24,7 +35,6 @@ type TwitterRateLimiter struct {
 	currentRequestCount int
 	mu                  sync.Mutex
 
-	lastRequest  time.Time
 	firstRequest time.Time
 
 	now func() time.Time
@@ -44,7 +54,6 @@ func (t *TwitterRateLimiter) Allow() bool {
 		}
 
 		t.currentRequestCount++
-		t.lastRequest = t.now()
 		return true
 	}
 
@@ -68,15 +77,14 @@ func (t *TwitterRateLimiter) shouldReset() {
 	}
 }
 
-// MarkLimited is a special case function which marks current limiter as if
-// would have reached the limit. This is useful when we manually want to set the
-// limiter in restricted state.
+// MarkLimited is a special case function which marks current limiter as if it
+// would have reached the rate limit. This is useful when we manually want to
+// set the limiter to restricted state.
 func (t *TwitterRateLimiter) MarkLimited() {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 
 	t.currentRequestCount = t.requests
-	t.lastRequest = t.now()
 }
 
 // SetAvailableTime sets timestamp when the next request can run.

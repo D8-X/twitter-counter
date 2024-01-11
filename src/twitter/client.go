@@ -96,6 +96,7 @@ func (t *twitterHTTPClient) sendGet(endpoint string, options ...ApiRequestOption
 	fullEndpoint := endpoint + "?" + req.QueryParam.Encode()
 	slog.Info("sent a GET twitter API request",
 		slog.String("endpoint", fullEndpoint),
+		slog.Int("status", resp.StatusCode()),
 	)
 
 	if resp.StatusCode() != 200 {
@@ -109,6 +110,7 @@ func (t *twitterHTTPClient) sendGet(endpoint string, options ...ApiRequestOption
 		// For rate limited requests -
 		if resp.StatusCode() == 429 {
 			resetTimeInt := int64(0)
+			// Check if reset timestamp is included in response
 			if resetTime := resp.Header().Get("x-rate-limit-reset"); resetTime != "" {
 				if ri, err := strconv.ParseInt(resetTime, 10, 64); err == nil {
 					resetTimeInt = ri
