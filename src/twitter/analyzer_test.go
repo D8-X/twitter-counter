@@ -302,3 +302,43 @@ func TestCollectAndProcessEndpoint(t *testing.T) {
 		})
 	}
 }
+
+func TestUserInteractionRanked(t *testing.T) {
+
+	u := &UserInteractions{
+		UserTwitterId: "123",
+		RepliesToOtherUsers: map[string]uint{
+			"other-user-1": 5,
+			"other-user-2": 1,
+			"other-user-3": 178,
+		},
+		RetweetsToOtherUsers: map[string]uint{
+			"other-user-1": 678,
+			"other-user-2": 34,
+			"other-user-3": 2,
+		},
+		UserLikedTweets: map[string]uint{
+			"other-user-1": 1,
+			"other-user-2": 44,
+			"other-user-3": 72,
+		},
+	}
+
+	ids, interactions := u.Ranked()
+
+	wantIds := []string{
+		"other-user-1",
+		"other-user-3",
+		"other-user-2",
+	}
+
+	wantInteractions := []uint{
+		684,
+		252,
+		79,
+	}
+
+	assert.Equal(t, wantIds, ids)
+	assert.Equal(t, wantInteractions, interactions)
+
+}

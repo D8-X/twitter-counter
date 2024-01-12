@@ -83,8 +83,8 @@ func NewDevAnalyzer(c Client) *Analyzer {
 	return &Analyzer{
 		Client:                 c,
 		MaxTweetsPerRequest:    100,
-		UserTweetsToFetch:      200,
-		UserLikedTweetsToFetch: 200,
+		UserTweetsToFetch:      300,
+		UserLikedTweetsToFetch: 300,
 		Logger:                 slog.Default(),
 		// 10 requests per 15 minutes for timeline requests per app
 		TimelineLimiter:    NewRateLimiter(10, time.Minute*15),
@@ -308,6 +308,11 @@ func (a *Analyzer) CreateUserInteractionGraph(userTwitterId string) (*UserIntera
 	}()
 
 	wg.Wait()
+
+	// Remove all current user entries from the result
+	delete(result.RepliesToOtherUsers, userTwitterId)
+	delete(result.RetweetsToOtherUsers, userTwitterId)
+	delete(result.UserLikedTweets, userTwitterId)
 
 	return result, nil
 }
