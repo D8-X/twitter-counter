@@ -1,4 +1,4 @@
-module github.com/D8-X/twitter-referral-system
+module github.com/D8-X/twitter-counter
 
 go 1.21.0
 

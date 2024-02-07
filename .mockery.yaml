@@ -2,7 +2,7 @@ with-expecter: true
 dir: src/mocks/
 outpkg: mocks
 packages:
-    github.com/D8-X/twitter-referral-system/src/twitter:
+    github.com/D8-X/twitter-counter/src/twitter:
         # place your package-specific config here
         config:
         interfaces:
