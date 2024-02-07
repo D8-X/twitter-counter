@@ -5,7 +5,7 @@ import (
 	"log/slog"
 	"os"
 
-	"github.com/D8-X/twitter-referral-system/src/twitter"
+	"github.com/D8-X/twitter-counter/src/twitter"
 	"github.com/spf13/viper"
 )
 

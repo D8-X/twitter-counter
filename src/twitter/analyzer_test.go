@@ -3,7 +3,7 @@ package twitter
 import (
 	"testing"
 
-	"github.com/D8-X/twitter-referral-system/src/mocks"
+	"github.com/D8-X/twitter-counter/src/mocks"
 	"github.com/stretchr/testify/assert"
 )
 
