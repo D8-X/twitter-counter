@@ -1,6 +1,6 @@
 module github.com/D8-X/twitter-counter
 
-go 1.21.0
+go 1.21.6
 
 require (
 	github.com/go-resty/resty/v2 v2.11.0
