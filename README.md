@@ -8,7 +8,7 @@ ranking list of of twitter user ids with which the provided user id interacted
 the most.
 
 Note that due to very restrictive Twitter API rate limits, you will most likely
-need to 
+need to upgrade the plan.
 
 ## Usage 
 
