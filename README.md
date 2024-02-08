@@ -32,6 +32,20 @@ on your used API plan.
 There is a helper method `FindUserDetails` in `twitter.Client` which you can use
 to get the user ids by twitter usernames.
 
+## Counting
+
+idX->idY Count: corresponds to the number of occurrences counted for idY when querying `analyzer.CreateUserInteractionGraph(idX)` compared to the count
+before the action took place.
+
+TODO:
+| **Action**                                    | **id1->id2 Count** | **id2->id1 Count** | **id1->id3 Count** | **id3->id2 Count** | **id3->id1 Count** |
+|-----------------------------------------------|--------------------|--------------------|--------------------|--------------------|--------------------|
+|                        id1 likes tweet of id2 |         +1         |         +0         |                    |          -         |          -         |
+| id1 comments on id2's tweet                   |         +1         |         +1         |                    |          -         |          -         |
+| id1 retweets id2's tweet                      |         +1         |         +1         |                    |          -         |          -         |
+|      id1 likes id2's re-tweet of id3's tweet  |         +1         |                    |                    |         +0         |         +0         |
+| id1 comments on id2's re-tweet of id3's tweet |                    |                    |                    |                    |                    |
+| id1 retweets id2's re-tweet of id3's tweet    |                    |                    |                    |                    |                    |
 
 ## Examples
 
