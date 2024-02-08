@@ -236,7 +236,7 @@ func (a *Analyzer) CollectAndProcessEndpoint(endpointName string, rateLimiter Ap
 }
 
 // CreateUserInteractionGraph runs a full interaction check for a given user id.
-// Note that due to rate limitin completing the interaction run might take a
+// Note that due to rate limiting, completing the interaction run might take a
 // long time. Make sure you use sensible values for limits.
 func (a *Analyzer) CreateUserInteractionGraph(userTwitterId string) (*UserInteractions, error) {
 	result := NewUserInteractionsObject()

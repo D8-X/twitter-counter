@@ -37,15 +37,42 @@ to get the user ids by twitter usernames.
 idX->idY Count: corresponds to the number of occurrences counted for idY when querying `analyzer.CreateUserInteractionGraph(idX)` compared to the count
 before the action took place.
 
-TODO:
-| **Action**                                    | **id1->id2 Count** | **id2->id1 Count** | **id1->id3 Count** | **id3->id2 Count** | **id3->id1 Count** |
-|-----------------------------------------------|--------------------|--------------------|--------------------|--------------------|--------------------|
-|                        id1 likes tweet of id2 |         +1         |         +0         |                    |          -         |          -         |
-| id1 comments on id2's tweet                   |         +1         |         +1         |                    |          -         |          -         |
-| id1 retweets id2's tweet                      |         +1         |         +1         |                    |          -         |          -         |
-|      id1 likes id2's re-tweet of id3's tweet  |         +1         |                    |                    |         +0         |         +0         |
-| id1 comments on id2's re-tweet of id3's tweet |                    |                    |                    |                    |                    |
-| id1 retweets id2's re-tweet of id3's tweet    |                    |                    |                    |                    |                    |
+| **Action**                                    | **id1->id2 Count** | **id2->id1 Count** | **id1->id3 Count** | **id3->id2 Count** | **id3->id1 Count** | **id2->id3 Count** |
+|-----------------------------------------------|--------------------|--------------------|--------------------|--------------------|--------------------|--------------------|
+|                        id1 likes tweet of id2 |         +1         |         +0         |         +0         |         +0         |         +0         |         +0         |
+| id1 comments on id2's tweet                   |         +1         |         +0         |         +0         |         +0         |         +0         |         +0         |
+| id1 retweets id2's tweet                      |         +1         |         +0         |         +0         |         +0         |         +0         |         +0         |
+|      id1 likes id2's re-tweet of id3's tweet  |         +1         |         +0         |         +0         |         +0         |         +0         |         +1         |
+| id1 comments on id2's re-tweet of id3's tweet |         +1         |         +0         |         +0         |         +0         |         +0         |         +1         |
+| id1 retweets id2's re-tweet of id3's tweet    |         +1         |         +0         |         +0         |         +0         |         +0         |         +1         |
+
+
+### How interactions are counted in `analyzer.CreateUserInteractionGraph`
+
+`analyzer.CreateUserInteractionGraph` fetches and calculates interaction from
+direct user tweets and direct user's liked tweets .
+
+For given Twitter user ID, we fetch all the timeline tweets of that ID. Timeline
+tweets will include normal tweets, retweets, replies (comments) to other tweets.
+Only replies and retweets matter, since from those tweets we can gather the
+information about the referenced user ids that our user ID interacted with.
+
+These tweets are processed from the provided ID side and a list of direct
+interaction user ids are collected.
+
+**Note** that higher than 1 level interactions like id1->id2->id3 (id1->id3) ar
+not counted since this information is not directly available from Twitter API.
+
+Same goes for user likes. Liked tweets are fetched and referenced user ids are
+counted.
+
+Tweets of user are checked in one-way direction. Meaning that when user's normal
+tweets are fetched - we don't check for interactions with that tweet from other
+users. There is functionality in this library to do that though:
+`Client.FetchTweetLikers` and `Client.FetchTweetRetweeters` could be used to
+gather details about other users who interacted with out user's normal tweets,
+but due to restrictive rate limits it is not feasible to do this and is not
+implemented in `analyzer.CreateUserInteractionGraph`.
 
 ## Examples
 
