@@ -1,9 +1,15 @@
 package twitter
 
 import (
+	"errors"
+	"io"
+	"log"
 	"log/slog"
+	"os"
+	"os/exec"
 	"sort"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 )
@@ -20,6 +26,12 @@ type UserInteractions struct {
 	// Retweets made by current UserTwitterId of other user ids posts. Data
 	// collected directly from FetchUserTweets whenever in referenced_tweets
 	RetweetsToOtherUsers map[string]uint
+
+	// Same as bove, just given by other users to current UserTwitterId
+	RetweetsFromOtherUsers map[string]uint
+
+	// Same as bove, just given by other users to current UserTwitterId
+	RepliesFromOtherUsers map[string]uint
 
 	// Likes given by current UserTwtiterId. Key is other user id, Value is
 	// number of likes for that particular user id.
@@ -48,6 +60,12 @@ func (u *UserInteractions) Ranked() ([]string, []uint) {
 	for k, v := range u.UserLikedTweets {
 		setHelper(k, v)
 	}
+	for k, v := range u.RepliesFromOtherUsers {
+		setHelper(k, v)
+	}
+	for k, v := range u.RetweetsFromOtherUsers {
+		setHelper(k, v)
+	}
 
 	userIds := make([]string, 0, len(all))
 	userValues := make([]uint, len(all))
@@ -70,9 +88,11 @@ func (u *UserInteractions) Ranked() ([]string, []uint) {
 
 func NewUserInteractionsObject() *UserInteractions {
 	return &UserInteractions{
-		RepliesToOtherUsers:  map[string]uint{},
-		RetweetsToOtherUsers: map[string]uint{},
-		UserLikedTweets:      map[string]uint{},
+		RepliesToOtherUsers:    map[string]uint{},
+		RetweetsToOtherUsers:   map[string]uint{},
+		UserLikedTweets:        map[string]uint{},
+		RetweetsFromOtherUsers: map[string]uint{},
+		RepliesFromOtherUsers:  map[string]uint{},
 	}
 }
 
@@ -134,18 +154,30 @@ type Analyzer struct {
 	UserLikedTweetsToFetch uint
 }
 
-// ProcessDirectUserInteractions processes and counts the direct user
-// interactions from given r. These include: replies to other users, retweets of
-// other user tweets
-func (a *Analyzer) ProcessDirectUserInteractions(r *TweetsResponse, result *UserInteractions) {
+// ProcessUserInteractions processes and counts the bidirectional user
+// interactions from given r for userTwitterId. These include: replies from and
+// to other users, retweets of other user tweets and retweets of user's tweets
+// by other users.
+func (a *Analyzer) ProcessUserInteractions(userTwitterId string, r *TweetsResponse, result *UserInteractions) {
 	for _, tweet := range r.Data {
 		// Process replies and increment reply counters. Replies contain
-		// InReplyToUserId field and can be used directly
+		// InReplyToUserId field and can be used directly to determine if reply
+		// is done by our userTwitterId for by other user
 		if tweet.InReplyToUserId != "" {
-			if _, ok := result.RepliesToOtherUsers[tweet.InReplyToUserId]; !ok {
-				result.RepliesToOtherUsers[tweet.InReplyToUserId] = 0
+			// Reply from other user to userTwitterId
+			if tweet.InReplyToUserId == userTwitterId {
+				if _, ok := result.RepliesFromOtherUsers[tweet.AuthorUserId]; !ok {
+					result.RepliesFromOtherUsers[tweet.AuthorUserId] = 0
+				}
+				result.RepliesFromOtherUsers[tweet.AuthorUserId]++
+			} else {
+				// Reply from userTwitterId to other user
+				if _, ok := result.RepliesToOtherUsers[tweet.InReplyToUserId]; !ok {
+					result.RepliesToOtherUsers[tweet.InReplyToUserId] = 0
+				}
+				result.RepliesToOtherUsers[tweet.InReplyToUserId]++
 			}
-			result.RepliesToOtherUsers[tweet.InReplyToUserId]++
+
 		}
 
 		// Retweets/Quoted RTs will contain only the reference to the original
@@ -262,7 +294,7 @@ func (a *Analyzer) CreateUserInteractionGraph(userTwitterId string) (*UserIntera
 				defer userInteractionsMu.Unlock()
 
 				// Process direct interactions
-				a.ProcessDirectUserInteractions(tweets, result)
+				a.ProcessUserInteractions(userTwitterId, tweets, result)
 
 				collectedTweetsNum += len(tweets.Data)
 				a.Logger.Info("collected timeline tweets", slog.Int("count", collectedTweetsNum))
@@ -315,4 +347,93 @@ func (a *Analyzer) CreateUserInteractionGraph(userTwitterId string) (*UserIntera
 	delete(result.UserLikedTweets, userTwitterId)
 
 	return result, nil
+}
+
+func (a *Analyzer) AnalyzeNewUserInteractions(newUserTwitterId string, referringUserIds []string) (*UserInteractions, error) {
+	result := NewUserInteractionsObject()
+
+	// TODO Timestamp used to determine whether we should stop processing tweets
+	// for current batch of referrringUserIds and move the currentReferrersIndex
+	// tweetsTimeLimit := -1
+
+	// Assuming the average twitter id length is 15 characters, the maximum
+	// number of referring users per query is 3. This can be calculated by
+	// running the following test code:
+	//
+	// arr := []string{} for i := 0; i < 20; i++ {
+	//  id := "123456789011123"
+	//  arr = append(arr, id)
+	//  q := buildSearchQuery(id, arr)
+	//  fmt.Printf("Number of ids %d Query length: %d\n", i+1, len(q), q)
+	// }
+	//
+	// The ids might be longer or shorter, for more recent users it seems to be
+	// around 18 chars. We'll start with 6 referring users per query and back
+	// off
+	numbReferrersPerQuery := 6
+	currentReferrersIndex := 0
+	currentNumReferrersToUse := numbReferrersPerQuery
+
+	// Process all referringUserIds for newUserTwitterId
+	for {
+		var resp *TweetsResponse
+		var err error
+
+		// Find the correct number of referring users to use per query
+		for {
+			resp, err = a.Client.FetchUserInteractionsWithSearch(newUserTwitterId, referringUserIds[currentReferrersIndex:currentReferrersIndex+currentNumReferrersToUse])
+			if err != nil {
+				if errors.Is(err, ErrSearchQueryTooLong) {
+					currentNumReferrersToUse--
+					a.Logger.Warn("search query too long, reducing number of referring users per query", slog.Int("next_referring_users_num", currentNumReferrersToUse))
+				} else {
+					return nil, err
+				}
+			} else {
+				break
+			}
+		}
+		a.ProcessUserInteractions(newUserTwitterId, resp, result)
+
+		// Once we don't have any more results or we reached time threshold,
+		// move on to the next batch of referring users
+		if resp.Meta.NextToken == "" {
+			// TODO check the tweetsTimeLimit
+			// if resp.Data[len(resp.Data)-1].CreatedAt < tweetsTimeLimit {
+			// }
+
+			// Reset and continue with the next batch of referring users
+			currentReferrersIndex += max(currentReferrersIndex+currentNumReferrersToUse, len(referringUserIds))
+			currentNumReferrersToUse = numbReferrersPerQuery
+			a.Logger.Info(
+				"no more results, moving to the next batch of referring users",
+				slog.Int("next_referring_users_index", currentReferrersIndex),
+			)
+
+			// We're done
+			if currentReferrersIndex >= len(referringUserIds) {
+				break
+			}
+		}
+	}
+
+	return result, nil
+}
+
+func printer(body []byte) {
+	// TMP print stuff
+	f, err := os.OpenFile("tmp.json", os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0644)
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer os.Remove("tmp.json")
+	_, err = io.Copy(f, strings.NewReader(string(body)))
+	if err != nil {
+		log.Fatal(err)
+	}
+	cmd := exec.Command("jq", ".", "tmp.json")
+	cmd.Stdout = os.Stdout
+	if err := cmd.Run(); err != nil {
+		log.Fatal(err)
+	}
 }

@@ -2,6 +2,7 @@ package twitter
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"strconv"
@@ -22,6 +23,10 @@ type ErrRateLimited struct {
 func (e *ErrRateLimited) Error() string {
 	return "rate limited"
 }
+
+var (
+	ErrSearchQueryTooLong = errors.New("provided query was too long")
+)
 
 // Client queries twitter API endpoints and fetches API data. Client is not
 // responsible for any rate limiting or throttling. It only issues requests and
@@ -59,15 +64,47 @@ type Client interface {
 
 	// FindUserDetails is a helper method to find user ids by names.
 	FindUserDetails(userNames []string) (*UserLookupResponse, error)
+
+	// FetchUserInteractionsWithSearch uses the search endpoint to find
+	// bidirectional interactions between the newUserId and referralUserIds.
+	// Interactions include replies and retweets in both directions. Because of the
+	// search query length limitation referralUserIds
+	FetchUserInteractionsWithSearch(newUserId string, referralUserIds []string, options ...ApiRequestOption) (*TweetsResponse, error)
+
+	GetApiPlan() TwitterAPIPlan
 }
 
-func NewAuthBearerClient(authBearer string) *twitterHTTPClient {
+type TwitterAPIPlan int
+
+const (
+	// 100$ per month plan (512 chars search query)
+	APIPlanBasic TwitterAPIPlan = 0 + iota
+	// 5000$ per month plan (1024 chars search query)
+	APIPlanPRO
+	// 40K+$ per month plan (1024 chars search query)
+	APIPlanEnterprise
+)
+
+func (t TwitterAPIPlan) MaxSearchQueryLength() int {
+	switch t {
+	case APIPlanBasic:
+		return 512
+	case APIPlanPRO, APIPlanEnterprise:
+		return 1024
+	default:
+		return 512
+	}
+
+}
+
+func NewAuthBearerClient(authBearer string, planType TwitterAPIPlan) *twitterHTTPClient {
 	r := resty.New()
 	r.SetHeader("Authorization", "Bearer "+authBearer)
 
 	return &twitterHTTPClient{
 		authBearer: authBearer,
 		r:          r,
+		plan:       planType,
 	}
 }
 
@@ -78,6 +115,12 @@ var _ Client = (*twitterHTTPClient)(nil)
 type twitterHTTPClient struct {
 	authBearer string
 	r          *resty.Client
+
+	plan TwitterAPIPlan
+}
+
+func (t *twitterHTTPClient) GetApiPlan() TwitterAPIPlan {
+	return t.plan
 }
 
 func (t *twitterHTTPClient) sendGet(endpoint string, options ...ApiRequestOption) ([]byte, error) {
@@ -215,7 +258,7 @@ func (t *twitterHTTPClient) FetchUserLikedTweets(userId string, options ...ApiRe
 }
 
 // FetchTweetLikers finds the users who liked given tweetId tweet. Limitations
-func (t twitterHTTPClient) FetchTweetLikers(tweetId string, options ...ApiRequestOption) (*UserInteractorsResponse, error) {
+func (t *twitterHTTPClient) FetchTweetLikers(tweetId string, options ...ApiRequestOption) (*UserInteractorsResponse, error) {
 	endpoint := TwitterV2API + "tweets/" + tweetId + "/liking_users"
 	body, err := t.sendGet(endpoint, options...)
 	if err != nil {
@@ -232,7 +275,7 @@ func (t twitterHTTPClient) FetchTweetLikers(tweetId string, options ...ApiReques
 	return ret, nil
 }
 
-func (t twitterHTTPClient) FetchTweetRetweeters(tweetId string, options ...ApiRequestOption) (*UserInteractorsResponse, error) {
+func (t *twitterHTTPClient) FetchTweetRetweeters(tweetId string, options ...ApiRequestOption) (*UserInteractorsResponse, error) {
 	endpoint := TwitterV2API + "tweets/" + tweetId + "/retweeted_by"
 	body, err := t.sendGet(endpoint, options...)
 	if err != nil {
@@ -248,4 +291,114 @@ func (t twitterHTTPClient) FetchTweetRetweeters(tweetId string, options ...ApiRe
 
 	return ret, nil
 
+}
+
+// FetchUserInteractionsWithSearch uses the search endpoint to find
+// bidirectional interactions between the newUserId and referralUserIds.
+// Interactions include replies and retweets in both directions. Because of the
+// search query length limitation referralUserIds.
+// FetchUserInteractionsWithSearch always fetches maximum number of tweets per
+// single call.
+func (t *twitterHTTPClient) FetchUserInteractionsWithSearch(newUserId string, referralUserIds []string, options ...ApiRequestOption) (*TweetsResponse, error) {
+	endpoint := TwitterV2API + "tweets/search/recent"
+	// Maximum number of results (tweets) to fetch per single http call
+	maxResults := 100
+
+	// For pro and enterprise plans, we can use the full archive endpoint
+	if t.plan > APIPlanBasic {
+		endpoint = TwitterV2API + "tweets/search/all"
+		maxResults = 500
+	}
+
+	if len(referralUserIds) == 0 {
+		return nil, fmt.Errorf("no referral user ids were provided")
+	}
+
+	query := buildSearchQuery(newUserId, referralUserIds)
+
+	// Whenever query is longer than available plan limit - return error
+	if len(query) > t.plan.MaxSearchQueryLength() {
+		return nil, ErrSearchQueryTooLong
+	}
+
+	body, err := t.sendGet(endpoint,
+		append(
+			options,
+			&OptApplyQueryParam{
+				Key: "query",
+				// Do not % encode the query, it will be done on the http
+				// client's side.
+				Value: query,
+			},
+			&OptApplyQueryParam{
+				Key:   "expansions",
+				Value: "in_reply_to_user_id,referenced_tweets.id.author_id",
+			},
+			&OptApplyQueryParam{
+				Key:   "tweet.fields",
+				Value: "created_at",
+			},
+			OptApplyMaxResults(strconv.Itoa(maxResults)),
+		)...,
+	)
+	if err != nil {
+		return nil, err
+	}
+
+	ret := &TweetsResponse{
+		Raw: body,
+	}
+	if err := json.Unmarshal(body, ret); err != nil {
+		return nil, fmt.Errorf("parsing user liked tweets response: %w", err)
+	}
+
+	return ret, nil
+}
+
+// buildSearchQuery builds the search endpoint query parameter for finding
+// tweets where given newUserId either replied or got replies from
+// referralUserIds list. It does not perform any validation, just builds the
+// query string. Refer to
+// https://developer.twitter.com/en/docs/twitter-api/tweets/search/integrate/build-a-query
+// documentation about building query parameter
+func buildSearchQuery(newUserId string, referralUserIds []string) string {
+	// First we'll build a query to find all the tweets where our newUserId
+	// replies to referralUserIds. The form is: from:newUserId (to:referralUserId1 OR
+	// to:referralUserId2 OR ...)
+	query := "from:" + newUserId
+	toSubQuery := ""
+	for _, userId := range referralUserIds {
+		toSubQuery = toSubQuery + "to:" + userId + " OR "
+	}
+	// Remove the last " OR" from the subquery
+	toSubQuery = toSubQuery[:len(toSubQuery)-4]
+	query = query + " (" + toSubQuery + ")"
+
+	// Then we'll build a query to find all the tweets where referralUserIds
+	// reply to our newUserId. The form is: to:newUserId (from:referralUserId1
+	// OR from:referralUserId2 OR ...)
+	query1 := "to:" + newUserId
+	fromReferrersSubquery := ""
+	for _, userId := range referralUserIds {
+		fromReferrersSubquery = fromReferrersSubquery + "from:" + userId + " OR "
+	}
+	// Remove the last " OR" from the subquery
+	fromReferrersSubquery = fromReferrersSubquery[:len(fromReferrersSubquery)-4]
+	query1 = query1 + " (" + fromReferrersSubquery + ")"
+
+	// Lastly, let's build the retweets query in both directions
+	// Retweets made by referrring users
+	retweetsOfNewUser := fmt.Sprintf("retweets_of:%s (%s)", newUserId, fromReferrersSubquery)
+
+	// Retweets made from our new user
+	retweetsFromNewUser := "from:" + newUserId
+	retweetsFromNewUserSubQuery := ""
+	for _, userId := range referralUserIds {
+		retweetsFromNewUserSubQuery = retweetsFromNewUserSubQuery + "retweets_of:" + userId + " OR "
+	}
+	retweetsFromNewUserSubQuery = retweetsFromNewUserSubQuery[:len(retweetsFromNewUserSubQuery)-4]
+	retweetsFromNewUser = retweetsFromNewUser + " (" + retweetsFromNewUserSubQuery + ")"
+
+	// Combine the two queries with OR operator
+	return fmt.Sprintf("(%s) OR (%s) OR (%s) OR (%s)", query, query1, retweetsFromNewUser, retweetsOfNewUser)
 }
