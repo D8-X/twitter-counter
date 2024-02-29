@@ -17,6 +17,7 @@ const TwitterV2API = "https://api.twitter.com/2/"
 // Whenever HTTP 429 is returned from API, this error will be returned from
 // Client func calls.
 type ErrRateLimited struct {
+	// Timestamp when the next request can be made
 	ResetTimestamp int64
 }
 
@@ -149,10 +150,12 @@ func (t *twitterHTTPClient) sendGet(endpoint string, options ...ApiRequestOption
 			slog.Int("status", resp.StatusCode()),
 			slog.String("repsonse", string(body)),
 		)
+		fmt.Printf("Response headers: %+v\n", resp.Header())
 
 		// For rate limited requests -
 		if resp.StatusCode() == 429 {
 			resetTimeInt := int64(0)
+
 			// Check if reset timestamp is included in response
 			if resetTime := resp.Header().Get("x-rate-limit-reset"); resetTime != "" {
 				if ri, err := strconv.ParseInt(resetTime, 10, 64); err == nil {
@@ -301,8 +304,9 @@ func (t *twitterHTTPClient) FetchTweetRetweeters(tweetId string, options ...ApiR
 // single call.
 func (t *twitterHTTPClient) FetchUserInteractionsWithSearch(newUserId string, referralUserIds []string, options ...ApiRequestOption) (*TweetsResponse, error) {
 	endpoint := TwitterV2API + "tweets/search/recent"
-	// Maximum number of results (tweets) to fetch per single http call
-	maxResults := 100
+	// Maximum number of results (tweets) to fetch per single http call (froim
+	// 10 to 100 to 500 for pro/enterprise)
+	maxResults := 10
 
 	// For pro and enterprise plans, we can use the full archive endpoint
 	if t.plan > APIPlanBasic {

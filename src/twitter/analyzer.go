@@ -2,14 +2,9 @@ package twitter
 
 import (
 	"errors"
-	"io"
-	"log"
 	"log/slog"
-	"os"
-	"os/exec"
 	"sort"
 	"strconv"
-	"strings"
 	"sync"
 	"time"
 )
@@ -349,9 +344,13 @@ func (a *Analyzer) CreateUserInteractionGraph(userTwitterId string) (*UserIntera
 	return result, nil
 }
 
+// AnalyzeNewUserInteractions runs a full interaction check for a given
+// newUserTwitterId and entire list of referrer users (referringUserIds). It
+// fetches fine-grained interactions between newUserTwitterId and all referring
+// via search API.
 func (a *Analyzer) AnalyzeNewUserInteractions(newUserTwitterId string, referringUserIds []string) (*UserInteractions, error) {
 	result := NewUserInteractionsObject()
-
+	start := time.Now()
 	// TODO Timestamp used to determine whether we should stop processing tweets
 	// for current batch of referrringUserIds and move the currentReferrersIndex
 	// tweetsTimeLimit := -1
@@ -368,40 +367,53 @@ func (a *Analyzer) AnalyzeNewUserInteractions(newUserTwitterId string, referring
 	// }
 	//
 	// The ids might be longer or shorter, for more recent users it seems to be
-	// around 18 chars. We'll start with 6 referring users per query and back
-	// off
-	numbReferrersPerQuery := 6
+	// around 18-19 chars, older users have shorter ids . Just in case our
+	// referring users list contains short ids, we'll use 4x average size for 15
+	// chars length and back off if we get a search query too long error.
+	numbReferrersPerQuery := 3 * 4
 	currentReferrersIndex := 0
 	currentNumReferrersToUse := numbReferrersPerQuery
 
-	// Process all referringUserIds for newUserTwitterId
+	var apiCallOpts []ApiRequestOption
+
+	// Process all referringUserIds for newUserTwitterId. To put it simply: we
+	// go through all interactions of newUserTwitterId with all referringUserIds
+	// in smaller batches of referringUserIds (because of the 512 char query
+	// parameter limit in the twitter's search API).
 	for {
 		var resp *TweetsResponse
 		var err error
 
-		// Find the correct number of referring users to use per query
+		// Find the correct number of referring users to use per query and run the query
 		for {
-			resp, err = a.Client.FetchUserInteractionsWithSearch(newUserTwitterId, referringUserIds[currentReferrersIndex:currentReferrersIndex+currentNumReferrersToUse])
+			upperBound := min(currentReferrersIndex+currentNumReferrersToUse, len(referringUserIds))
+			resp, err = a.Client.FetchUserInteractionsWithSearch(newUserTwitterId, referringUserIds[currentReferrersIndex:upperBound], apiCallOpts...)
 			if err != nil {
 				if errors.Is(err, ErrSearchQueryTooLong) {
 					currentNumReferrersToUse--
 					a.Logger.Warn("search query too long, reducing number of referring users per query", slog.Int("next_referring_users_num", currentNumReferrersToUse))
+				} else if e, is := err.(*ErrRateLimited); is {
+					// Handle rate limiting
+					rt := time.Unix(e.ResetTimestamp, 0)
+					sleep := time.Until(rt)
+					a.Logger.Info("FetchUserInteractionsWithSearch rate limited, waiting to run next request",
+						slog.Time("next_reset_at", rt),
+					)
+					time.Sleep(sleep)
 				} else {
-					return nil, err
+					// On error, return result with whatever data we have
+					return result, err
 				}
 			} else {
 				break
 			}
 		}
+
 		a.ProcessUserInteractions(newUserTwitterId, resp, result)
 
-		// Once we don't have any more results or we reached time threshold,
-		// move on to the next batch of referring users
+		// Once we don't have any more results or we reached time threshold for
+		// tweets in current batch, move on to the next batch of referring users
 		if resp.Meta.NextToken == "" {
-			// TODO check the tweetsTimeLimit
-			// if resp.Data[len(resp.Data)-1].CreatedAt < tweetsTimeLimit {
-			// }
-
 			// Reset and continue with the next batch of referring users
 			currentReferrersIndex += max(currentReferrersIndex+currentNumReferrersToUse, len(referringUserIds))
 			currentNumReferrersToUse = numbReferrersPerQuery
@@ -410,30 +422,24 @@ func (a *Analyzer) AnalyzeNewUserInteractions(newUserTwitterId string, referring
 				slog.Int("next_referring_users_index", currentReferrersIndex),
 			)
 
-			// We're done
+			// Log out the processing time
+			a.Logger.Info("total time while processing user interactions", slog.Duration("time", time.Since(start)))
+
+			// We're done with entire referrers list
 			if currentReferrersIndex >= len(referringUserIds) {
 				break
 			}
+		} else {
+			// Include next page token in the next request
+			apiCallOpts = []ApiRequestOption{OptApplyPaginationToken(resp.Meta.NextToken)}
 		}
 	}
 
-	return result, nil
-}
+	// Delete self userId from the results
+	delete(result.RepliesToOtherUsers, newUserTwitterId)
+	delete(result.RepliesFromOtherUsers, newUserTwitterId)
+	delete(result.RetweetsFromOtherUsers, newUserTwitterId)
+	delete(result.RetweetsToOtherUsers, newUserTwitterId)
 
-func printer(body []byte) {
-	// TMP print stuff
-	f, err := os.OpenFile("tmp.json", os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0644)
-	if err != nil {
-		log.Fatal(err)
-	}
-	defer os.Remove("tmp.json")
-	_, err = io.Copy(f, strings.NewReader(string(body)))
-	if err != nil {
-		log.Fatal(err)
-	}
-	cmd := exec.Command("jq", ".", "tmp.json")
-	cmd.Stdout = os.Stdout
-	if err := cmd.Run(); err != nil {
-		log.Fatal(err)
-	}
+	return result, nil
 }

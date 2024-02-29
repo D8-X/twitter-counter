@@ -58,8 +58,6 @@ func runInteractionsAnalyzer() {
 	if err != nil {
 		log.Fatal(err)
 	}
-	fmt.Printf("Response: %v\n", resp)
-
 	ids, ranks := resp.Ranked()
 	fmt.Printf("Rankings: %+v %+v\n", ids, ranks)
 
