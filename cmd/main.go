@@ -44,7 +44,7 @@ func runInteractionsAnalyzer() {
 	// Generate the user interaction graph
 	a := twitter.NewProductionAnalyzer(client)
 
-	resp, err := a.AnalyzeNewUserInteractions(
+	resp, err := a.CreateUserInteractionGraph(
 		"339061487", // "APompliano"
 		[]string{
 			"21839417",            // 	"NateAFischer",
@@ -59,14 +59,5 @@ func runInteractionsAnalyzer() {
 		log.Fatal(err)
 	}
 	ids, ranks := resp.Ranked()
-	fmt.Printf("Rankings: %+v %+v\n", ids, ranks)
-
-	// // d8x_exchange user id
-	// result, _ := a.CreateUserInteractionGraph("1593204306206932993")
-
-	// // Print out the ranked user ids and interaction counts
-	// rankedUserIds, rankedUserValues := result.Ranked()
-	// for i, userId := range rankedUserIds {
-	// 	fmt.Printf("Rank #%d user id \t%s number or interactions\t%d\n", i+1, userId, rankedUserValues[i])
-	// }
+	fmt.Printf("Response: %+v \nRankings: %+v %+v\n", resp, ids, ranks)
 }

@@ -66,6 +66,9 @@ type Client interface {
 	// FindUserDetails is a helper method to find user ids by names.
 	FindUserDetails(userNames []string) (*UserLookupResponse, error)
 
+	// FindUserById finds user details by user id
+	FindUserById(userTwitterId string) (*UserDetail, error)
+
 	// FetchUserInteractionsWithSearch uses the search endpoint to find
 	// bidirectional interactions between the newUserId and referralUserIds.
 	// Interactions include replies and retweets in both directions. Because of the
@@ -193,6 +196,24 @@ func (t *twitterHTTPClient) FindUserDetails(userNames []string) (*UserLookupResp
 	return ret, nil
 }
 
+func (t *twitterHTTPClient) FindUserById(userTwitterId string) (*UserDetail, error) {
+	endpoint := TwitterV2API + "users/" + userTwitterId
+
+	body, err := t.sendGet(endpoint)
+	if err != nil {
+		return nil, err
+	}
+
+	fmt.Printf("User details: %s\n", string(body))
+
+	ret := &UserDetail{}
+	if err := json.Unmarshal(body, ret); err != nil {
+		return nil, fmt.Errorf("parsing user lookup by id response: %w", err)
+	}
+
+	return ret, nil
+}
+
 // FetchUserTweets sends a user tweets request and parses it. Collected
 // iformation includes tweet text, tweet id, conversation id,
 func (t *twitterHTTPClient) FetchUserTweets(userId string, options ...ApiRequestOption) (*TweetsResponse, error) {
@@ -306,7 +327,7 @@ func (t *twitterHTTPClient) FetchUserInteractionsWithSearch(newUserId string, re
 	endpoint := TwitterV2API + "tweets/search/recent"
 	// Maximum number of results (tweets) to fetch per single http call (froim
 	// 10 to 100 to 500 for pro/enterprise)
-	maxResults := 10
+	maxResults := 100
 
 	// For pro and enterprise plans, we can use the full archive endpoint
 	if t.plan > APIPlanBasic {
