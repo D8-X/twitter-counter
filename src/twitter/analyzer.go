@@ -1,6 +1,7 @@
 package twitter
 
 import (
+	"errors"
 	"log/slog"
 	"sort"
 	"strconv"
@@ -20,6 +21,12 @@ type UserInteractions struct {
 	// Retweets made by current UserTwitterId of other user ids posts. Data
 	// collected directly from FetchUserTweets whenever in referenced_tweets
 	RetweetsToOtherUsers map[string]uint
+
+	// Same as bove, just given by other users to current UserTwitterId
+	RetweetsFromOtherUsers map[string]uint
+
+	// Same as bove, just given by other users to current UserTwitterId
+	RepliesFromOtherUsers map[string]uint
 
 	// Likes given by current UserTwtiterId. Key is other user id, Value is
 	// number of likes for that particular user id.
@@ -48,6 +55,12 @@ func (u *UserInteractions) Ranked() ([]string, []uint) {
 	for k, v := range u.UserLikedTweets {
 		setHelper(k, v)
 	}
+	for k, v := range u.RepliesFromOtherUsers {
+		setHelper(k, v)
+	}
+	for k, v := range u.RetweetsFromOtherUsers {
+		setHelper(k, v)
+	}
 
 	userIds := make([]string, 0, len(all))
 	userValues := make([]uint, len(all))
@@ -70,9 +83,11 @@ func (u *UserInteractions) Ranked() ([]string, []uint) {
 
 func NewUserInteractionsObject() *UserInteractions {
 	return &UserInteractions{
-		RepliesToOtherUsers:  map[string]uint{},
-		RetweetsToOtherUsers: map[string]uint{},
-		UserLikedTweets:      map[string]uint{},
+		RepliesToOtherUsers:    map[string]uint{},
+		RetweetsToOtherUsers:   map[string]uint{},
+		UserLikedTweets:        map[string]uint{},
+		RetweetsFromOtherUsers: map[string]uint{},
+		RepliesFromOtherUsers:  map[string]uint{},
 	}
 }
 
@@ -134,18 +149,30 @@ type Analyzer struct {
 	UserLikedTweetsToFetch uint
 }
 
-// ProcessDirectUserInteractions processes and counts the direct user
-// interactions from given r. These include: replies to other users, retweets of
-// other user tweets
-func (a *Analyzer) ProcessDirectUserInteractions(r *TweetsResponse, result *UserInteractions) {
+// ProcessUserInteractions processes and counts the bidirectional user
+// interactions from given r for userTwitterId. These include: replies from and
+// to other users, retweets of other user tweets and retweets of user's tweets
+// by other users.
+func (a *Analyzer) ProcessUserInteractions(userTwitterId string, r *TweetsResponse, result *UserInteractions) {
 	for _, tweet := range r.Data {
 		// Process replies and increment reply counters. Replies contain
-		// InReplyToUserId field and can be used directly
+		// InReplyToUserId field and can be used directly to determine if reply
+		// is done by our userTwitterId for by other user
 		if tweet.InReplyToUserId != "" {
-			if _, ok := result.RepliesToOtherUsers[tweet.InReplyToUserId]; !ok {
-				result.RepliesToOtherUsers[tweet.InReplyToUserId] = 0
+			// Reply from other user to userTwitterId
+			if tweet.InReplyToUserId == userTwitterId {
+				if _, ok := result.RepliesFromOtherUsers[tweet.AuthorUserId]; !ok {
+					result.RepliesFromOtherUsers[tweet.AuthorUserId] = 0
+				}
+				result.RepliesFromOtherUsers[tweet.AuthorUserId]++
+			} else {
+				// Reply from userTwitterId to other user
+				if _, ok := result.RepliesToOtherUsers[tweet.InReplyToUserId]; !ok {
+					result.RepliesToOtherUsers[tweet.InReplyToUserId] = 0
+				}
+				result.RepliesToOtherUsers[tweet.InReplyToUserId]++
 			}
-			result.RepliesToOtherUsers[tweet.InReplyToUserId]++
+
 		}
 
 		// Retweets/Quoted RTs will contain only the reference to the original
@@ -163,11 +190,20 @@ func (a *Analyzer) ProcessDirectUserInteractions(r *TweetsResponse, result *User
 					continue
 				}
 
-				// Increment the retweet counter
-				if _, ok := result.RetweetsToOtherUsers[originalTweet.AuthorUserId]; !ok {
-					result.RetweetsToOtherUsers[originalTweet.AuthorUserId] = 0
+				// userTwitterId retweeted other user's tweet
+				if originalTweet.AuthorUserId != userTwitterId {
+					if _, ok := result.RetweetsToOtherUsers[originalTweet.AuthorUserId]; !ok {
+						result.RetweetsToOtherUsers[originalTweet.AuthorUserId] = 0
+					}
+					result.RetweetsToOtherUsers[originalTweet.AuthorUserId]++
+				} else {
+					// Other user retweeted userTwitterId's tweet
+					if _, ok := result.RetweetsFromOtherUsers[originalTweet.AuthorUserId]; !ok {
+						result.RetweetsFromOtherUsers[originalTweet.AuthorUserId] = 0
+					}
+					result.RetweetsFromOtherUsers[originalTweet.AuthorUserId]++
 				}
-				result.RetweetsToOtherUsers[originalTweet.AuthorUserId]++
+
 			}
 		}
 	}
@@ -235,10 +271,12 @@ func (a *Analyzer) CollectAndProcessEndpoint(endpointName string, rateLimiter Ap
 	}
 }
 
-// CreateUserInteractionGraph runs a full interaction check for a given user id.
-// Note that due to rate limiting, completing the interaction run might take a
-// long time. Make sure you use sensible values for limits.
-func (a *Analyzer) CreateUserInteractionGraph(userTwitterId string) (*UserInteractions, error) {
+// CreateDirectUserInteractionGraph runs a full direct (userTwitterId sided)
+// interaction check for a given user id. Note that due to rate limiting,
+// completing the interaction run might take a long time. Make sure you use
+// sensible values for limits. Use this if you only want to know with whom the
+// userTwitterId interacted, but not who interacted with it.
+func (a *Analyzer) CreateDirectUserInteractionGraph(userTwitterId string) (*UserInteractions, error) {
 	result := NewUserInteractionsObject()
 	result.UserTwitterId = userTwitterId
 	userInteractionsMu := sync.Mutex{}
@@ -262,7 +300,7 @@ func (a *Analyzer) CreateUserInteractionGraph(userTwitterId string) (*UserIntera
 				defer userInteractionsMu.Unlock()
 
 				// Process direct interactions
-				a.ProcessDirectUserInteractions(tweets, result)
+				a.ProcessUserInteractions(userTwitterId, tweets, result)
 
 				collectedTweetsNum += len(tweets.Data)
 				a.Logger.Info("collected timeline tweets", slog.Int("count", collectedTweetsNum))
@@ -315,4 +353,175 @@ func (a *Analyzer) CreateUserInteractionGraph(userTwitterId string) (*UserIntera
 	delete(result.UserLikedTweets, userTwitterId)
 
 	return result, nil
+}
+
+// CreateUserInteractionGraph runs a full tweet interactions and
+// newUserTwitterId sided liked tweets check. Tweet interactions are checked via
+// the search api and entire list of referringUserIds is checked.
+func (a *Analyzer) CreateUserInteractionGraph(newUserTwitterId string, referringUserIds []string) (*UserInteractions, error) {
+	result := NewUserInteractionsObject()
+	result.UserTwitterId = newUserTwitterId
+	userInteractionsMu := sync.Mutex{}
+
+	wg := sync.WaitGroup{}
+
+	// Process the tweets interactions
+	wg.Add(1)
+	go func() {
+		a.ProcessUserTweetsInteractions(newUserTwitterId, referringUserIds, result, &userInteractionsMu)
+		wg.Done()
+	}()
+
+	// Process user liked tweets
+	collectedLikedTweetsNum := 0
+	wg.Add(1)
+	go func() {
+		a.CollectAndProcessEndpoint("user-liked-tweets", a.LikedTweetsLimiter,
+			func(opts []ApiRequestOption) (*TweetsResponse, error) {
+				return a.Client.FetchUserLikedTweets(newUserTwitterId,
+					append(opts, OptApplyMaxResults(strconv.Itoa(int(a.MaxTweetsPerRequest))))...,
+				)
+			},
+			func(tweets *TweetsResponse) bool {
+				userInteractionsMu.Lock()
+				defer userInteractionsMu.Unlock()
+
+				a.ProcessUserLikes(tweets, result)
+
+				collectedLikedTweetsNum += len(tweets.Data)
+				a.Logger.Info("collected liked tweets", slog.Int("count", collectedLikedTweetsNum))
+
+				// Stop when we don't have more results or we reached our defined
+				// limit
+				if len(tweets.Data) < int(a.MaxTweetsPerRequest) || tweets.Meta.NextToken == "" || collectedLikedTweetsNum >= int(a.UserLikedTweetsToFetch) {
+					return false
+				}
+				return true
+			},
+		)
+		wg.Done()
+	}()
+
+	wg.Wait()
+
+	// Delete self userId from the results
+	delete(result.RepliesToOtherUsers, newUserTwitterId)
+	delete(result.RepliesFromOtherUsers, newUserTwitterId)
+	delete(result.RetweetsFromOtherUsers, newUserTwitterId)
+	delete(result.RetweetsToOtherUsers, newUserTwitterId)
+	delete(result.UserLikedTweets, newUserTwitterId)
+
+	return result, nil
+}
+
+// ProcessUserTweetsInteractions runs a full tweets (replies, retweets)
+// interaction check for a given newUserTwitterId and entire list of referrer
+// users (referringUserIds). It fetches fine-grained tweet interactions between
+// newUserTwitterId and all referring via search API. .
+func (a *Analyzer) ProcessUserTweetsInteractions(newUserTwitterId string, referringUserIds []string, result *UserInteractions, mu *sync.Mutex) error {
+	start := time.Now()
+
+	// Duration used to determine how long in the past we should check the
+	// tweets for each referring user batch. Defaulting to 5 days for basic and
+	// 14 for better plans
+	tweetsTimeThreshold := 5 * 24 * time.Hour
+	if a.Client.GetApiPlan() > APIPlanBasic {
+		tweetsTimeThreshold = 14 * 24 * time.Hour
+	}
+
+	// Assuming the average twitter id length is 15 characters, the maximum
+	// number of referring users per query is 3. This can be calculated by
+	// running the following test code:
+	//
+	// arr := []string{} for i := 0; i < 20; i++ {
+	//  id := "123456789011123"
+	//  arr = append(arr, id)
+	//  q := buildSearchQuery(id, arr)
+	//  fmt.Printf("Number of ids %d Query length: %d\n", i+1, len(q), q)
+	// }
+	//
+	// The ids might be longer or shorter, for more recent users it seems to be
+	// around 18-19 chars, older users have shorter ids . Just in case our
+	// referring users list contains short ids, we'll use 4x average size for 15
+	// chars length and back off if we get a search query too long error.
+	numbReferrersPerQuery := 3 * 4
+	currentReferrersIndex := 0
+	currentNumReferrersToUse := numbReferrersPerQuery
+
+	var apiCallOpts []ApiRequestOption
+
+	// Process all referringUserIds for newUserTwitterId. To put it simply: we
+	// go through all interactions of newUserTwitterId with all referringUserIds
+	// in smaller batches of referringUserIds (because of the 512 char query
+	// parameter limit in the twitter's search API).
+	for {
+		var resp *TweetsResponse
+		var err error
+
+		// Find the correct number of referring users to use per query and run the query
+		for {
+			upperBound := min(currentReferrersIndex+currentNumReferrersToUse, len(referringUserIds))
+			resp, err = a.Client.FetchUserInteractionsWithSearch(newUserTwitterId, referringUserIds[currentReferrersIndex:upperBound], apiCallOpts...)
+			if err != nil {
+				if errors.Is(err, ErrSearchQueryTooLong) {
+					currentNumReferrersToUse--
+					a.Logger.Warn("search query too long, reducing number of referring users per query", slog.Int("next_referring_users_num", currentNumReferrersToUse))
+				} else if e, is := err.(*ErrRateLimited); is {
+					// Handle rate limiting from twitter and sleep until the
+					// next reset
+					rt := time.Unix(e.ResetTimestamp+1, 0)
+					sleep := time.Until(rt)
+					a.Logger.Info("FetchUserInteractionsWithSearch rate limited, waiting to run next request",
+						slog.Time("next_reset_at", rt),
+					)
+					time.Sleep(sleep)
+				} else {
+					return err
+				}
+			} else {
+				break
+			}
+		}
+
+		mu.Lock()
+		a.ProcessUserInteractions(newUserTwitterId, resp, result)
+		mu.Unlock()
+
+		var lastTweetTime time.Time
+		lastTweetTimeSet := false
+		if len(resp.Data) > 0 {
+			timeStamp, err := strconv.ParseInt(resp.Data[len(resp.Data)-1].CreatedAt, 10, 64)
+			if err == nil {
+				lastTweetTime = time.Unix(timeStamp, 0)
+				lastTweetTimeSet = true
+			}
+		}
+
+		// Once we don't have any more results or we reached time threshold for
+		// tweets in current batch, move on to the next batch of referring users
+		if resp.Meta.NextToken == "" || (lastTweetTimeSet && lastTweetTime.Before(time.Now().Add(-tweetsTimeThreshold))) {
+			// Reset and continue with the next batch of referring users
+			currentReferrersIndex += max(currentReferrersIndex+currentNumReferrersToUse, len(referringUserIds))
+			currentNumReferrersToUse = numbReferrersPerQuery
+			a.Logger.Info(
+				"no more results or time threshold reached, moving to the next batch of referring users",
+				slog.Int("next_referring_users_index", currentReferrersIndex),
+				slog.Time("last_tweet_time", lastTweetTime),
+			)
+
+			// Log out the processing time
+			a.Logger.Info("total time while running AnalyzeNewUserInteractions", slog.Duration("time", time.Since(start)))
+
+			// We're done with entire referrers list
+			if currentReferrersIndex >= len(referringUserIds) {
+				a.Logger.Info("AnalyzeNewUserInteractions run completed", slog.Duration("elapsed_time", time.Since(start)))
+				break
+			}
+		} else {
+			// Include next page token in the next request
+			apiCallOpts = []ApiRequestOption{OptApplyPaginationToken(resp.Meta.NextToken)}
+		}
+	}
+
+	return nil
 }

@@ -29,7 +29,11 @@ func TestProcessDirectUserInteractions(t *testing.T) {
 					"other-user-1": 1,
 					"other-user-2": 3,
 				},
-				UserLikedTweets: map[string]uint{},
+				UserLikedTweets:        map[string]uint{},
+				RetweetsFromOtherUsers: map[string]uint{},
+				RepliesFromOtherUsers: map[string]uint{
+					"other-user-replier-123": 1,
+				},
 			},
 			inputResponse: &TweetsResponse{
 				Data: []Tweet{
@@ -57,6 +61,12 @@ func TestProcessDirectUserInteractions(t *testing.T) {
 					{
 						InReplyToUserId: "other-user-2",
 						AuthorUserId:    "123",
+					},
+
+					// Replies to the user
+					{
+						InReplyToUserId: "123",
+						AuthorUserId:    "other-user-replier-123",
 					},
 
 					// Retweets
@@ -88,6 +98,13 @@ func TestProcessDirectUserInteractions(t *testing.T) {
 						},
 						AuthorUserId: "123",
 					},
+
+					// Retweets to the user
+					{
+						TweetId:         "rt-to-user-1",
+						InReplyToUserId: "",
+						AuthorUserId:    "other-user-replier-123",
+					},
 				},
 				Includes: TweetIncludes{
 					Tweets: []Tweet{
@@ -107,6 +124,10 @@ func TestProcessDirectUserInteractions(t *testing.T) {
 							AuthorUserId: "other-user-2",
 							TweetId:      "rt-original-4",
 						},
+						{
+							AuthorUserId: "other-user-replier-123",
+							TweetId:      "rt-to-user-1",
+						},
 					},
 				},
 			},
@@ -121,7 +142,7 @@ func TestProcessDirectUserInteractions(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			a := NewDevAnalyzer(nil)
-			a.ProcessDirectUserInteractions(tt.inputResponse, tt.inputResult)
+			a.ProcessUserInteractions(tt.userId, tt.inputResponse, tt.inputResult)
 
 			assert.Equal(t, tt.expectResult, tt.inputResult)
 		})
@@ -147,6 +168,8 @@ func TestProcessUserLikes(t *testing.T) {
 					"other-user-1": 1,
 					"other-user-2": 5,
 				},
+				RetweetsFromOtherUsers: map[string]uint{},
+				RepliesFromOtherUsers:  map[string]uint{},
 			},
 			inputResponse: &TweetsResponse{
 				Data: []Tweet{
@@ -304,7 +327,6 @@ func TestCollectAndProcessEndpoint(t *testing.T) {
 }
 
 func TestUserInteractionRanked(t *testing.T) {
-
 	u := &UserInteractions{
 		UserTwitterId: "123",
 		RepliesToOtherUsers: map[string]uint{

@@ -12,17 +12,19 @@ need to upgrade the plan.
 
 ## Usage 
 
-Create a client with `Bearer` token from your Twitter API dashboard.
+Create a client with `Bearer` token from your Twitter API dashboard and set the
+API plan.
 
 ```go
-var client twitter.Client = twitter.NewAuthBearerClient("<YOUR_BEARER_TOKEN>")
+var client twitter.Client = twitter.NewAuthBearerClient("<YOUR_BEARER_TOKEN>", twitter.APIPlanBasic)
 ```
 
-Create analyzer with client and provide the user id you want to run analysis on
+Create analyzer with client and provide the user id + referring users list of
+ids you want to run analysis on
 
 ```go
 analyzer := twitter.NewProductionAnalyzer(client)
-result, err := analyzer.CreateUserInteractionGraph("<TWITTER_USER_ID>")
+result, err := analyzer.CreateUserInteractionGraph("<TWITTER_USER_ID>", "<REFERRAL_USERS_LIST>")
 rankedUserIds, rankedUserValues := result.Ranked()
 ```
 
@@ -31,6 +33,7 @@ on your used API plan.
 
 There is a helper method `FindUserDetails` in `twitter.Client` which you can use
 to get the user ids by twitter usernames.
+
 
 ## Counting
 
@@ -47,9 +50,20 @@ before the action took place.
 | id1 retweets id2's re-tweet of id3's tweet    |         +1         |         +0         |         +0         |         +0         |         +0         |         +1         |
 
 
-### How interactions are counted in `analyzer.CreateUserInteractionGraph`
 
-`analyzer.CreateUserInteractionGraph` fetches and calculates interaction from
+### How interactions are counted in `analyzer.CreateDirectUserInteractionGraph`
+
+`analyzer.CreateDirectUserInteractionGraph` fetches and calculates interaction
+between provided list of `referringUserIds` and `newUserTwitterId` by using
+fine-grained search API. Search API endpoints limit results to recent tweets
+only (7 days on basic plan). This method also fetches the direct likes of the
+provided `newUserTwitterId` id. Returned result is `UserInteractions` struct
+which can be used to get the ranked list of interactions.
+
+
+### How interactions are counted in `analyzer.CreateDirectUserInteractionGraph`
+
+`analyzer.CreateDirectUserInteractionGraph` fetches and calculates interaction from
 direct user tweets and direct user's liked tweets .
 
 For given Twitter user ID, we fetch all the timeline tweets of that ID. Timeline
@@ -72,7 +86,7 @@ users. There is functionality in this library to do that though:
 `Client.FetchTweetLikers` and `Client.FetchTweetRetweeters` could be used to
 gather details about other users who interacted with out user's normal tweets,
 but due to restrictive rate limits it is not feasible to do this and is not
-implemented in `analyzer.CreateUserInteractionGraph`.
+implemented in `analyzer.CreateDirectUserInteractionGraph`.
 
 ## Examples
 
